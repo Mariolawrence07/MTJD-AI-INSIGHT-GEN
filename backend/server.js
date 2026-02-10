@@ -23,10 +23,28 @@ const app = express();
 app.use(express.json());
 app.use(cookieParser());
 
-app.use(cors({
-  origin: "http://localhost:5173", // Allow your frontend's URL
-  credentials: true, // Allow cookies and other credentials
-}));
+import cors from "cors";
+
+const allowedOrigins = [
+  "http://localhost:5173",
+   process.env.FRONTEND_URL
+];
+
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      // allow server-to-server, Postman, Render health checks
+      if (!origin) return cb(null, true);
+
+      if (allowedOrigins.includes(origin)) return cb(null, true);
+
+      return cb(new Error(`CORS blocked: ${origin}`));
+    },
+    credentials: true,
+  })
+);
+
+
 
 app.use("/api/auth", authRoutes);
 app.use("/api/personas", personaRoutes);
