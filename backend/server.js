@@ -13,6 +13,7 @@ import billingRoutes from "./routes/billing.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
+import aiRoutes from "./routes/ai.routes.js";
 
 dotenv.config();
 
@@ -35,6 +36,7 @@ app.use("/api/analytics", analyticsRoutes);
 app.use("/api/integrations", integrationRoutes);
 app.use("/api/billing", billingRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/ai", aiRoutes);
 
 app.use(errorHandler);
 
