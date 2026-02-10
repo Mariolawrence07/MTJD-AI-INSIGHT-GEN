@@ -1,5 +1,6 @@
 // backend/middleware/upload.middleware.js
-import multer from "multer";
+import pkg from "multer";
+const multer = pkg.default || pkg;
 
 const storage = multer.memoryStorage();
 
