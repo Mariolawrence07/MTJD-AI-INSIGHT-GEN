@@ -1,46 +1,38 @@
 import jwt from "jsonwebtoken";
 import User from "../models/user.model.js";
 
+const getAccessToken = (req) => {
+  const cookieToken = req.cookies?.accessToken;
+  if (cookieToken) return cookieToken;
+
+  const header = req.headers.authorization || req.headers.Authorization;
+  if (typeof header === "string" && header.startsWith("Bearer ")) {
+    return header.slice(7).trim();
+  }
+  return null;
+};
+
 export const protectRoute = async (req, res, next) => {
   try {
-    const accessToken = req.cookies.accessToken;
+    const token = getAccessToken(req);
+    if (!token) return res.status(401).json({ message: "Unauthorized - No access token provided" });
 
-    if (!accessToken) {
-      return res.status(401).json({ message: "Unauthorized - No access token provided" });
-    }
+    const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
 
-    let decoded;
-    try {
-      decoded = jwt.verify(accessToken, process.env.ACCESS_TOKEN_SECRET);
-    } catch (error) {
-      if (error.name === "TokenExpiredError") {
-        return res.status(401).json({ message: "Unauthorized - Access token expired" });
-      }
-      return res.status(401).json({ message: "Unauthorized - Invalid access token" });
-    }
-
-    // Find user in Postgres (Sequelize)
     const user = await User.findByPk(decoded.userId, {
-      attributes: { exclude: ["password"] }, // Exclude password
+      attributes: { exclude: ["password"] },
     });
 
-    if (!user) {
-      return res.status(401).json({ message: "User not found" });
-    }
+    if (!user) return res.status(401).json({ message: "User not found" });
 
     req.user = user;
-    next();
-  } catch (error) {
-    console.error("Error in protectRoute middleware:", error.message);
+    return next();
+  } catch (e) {
     return res.status(401).json({ message: "Unauthorized - Invalid access token" });
   }
 };
 
-// Admin route middleware
 export const adminRoute = (req, res, next) => {
-  if (req.user && req.user.role === "admin") {
-    next();
-  } else {
-    return res.status(403).json({ message: "Access denied - Admin only" });
-  }
+  if (req.user?.role === "admin") return next();
+  return res.status(403).json({ message: "Access denied - Admin only" });
 };

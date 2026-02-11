@@ -45,7 +45,7 @@ app.use(
   })
 );
 
-
+app.options("*", cors());
 
 app.use("/api/auth", authRoutes);
 app.use("/api/personas", personaRoutes);

@@ -1,159 +1,162 @@
-import { redis } from "../lib/redis.js";
-import User from "../models/user.model.js";
-import jwt from "jsonwebtoken";
 import crypto from "crypto";
+import jwt from "jsonwebtoken";
+import { redis } from "../lib/redis.js";
 import { sendPasswordResetEmail } from "../lib/email.js";
+import User from "../models/user.model.js";
 
-const generateTokens = (userId) => {
-  const accessToken = jwt.sign({ userId }, process.env.ACCESS_TOKEN_SECRET, {
-    expiresIn: "15m",
-  });
+const ACCESS_TTL = "15m";
+const REFRESH_TTL = "7d";
+const RESET_TOKEN_TTL_SECONDS = 15 * 60;
 
-  const refreshToken = jwt.sign({ userId }, process.env.REFRESH_TOKEN_SECRET, {
-    expiresIn: "7d",
-  });
+const REFRESH_KEY = (userId) => `refresh_token:${userId}`;
+const RESET_KEY = (hash) => `reset_token:${hash}`;
+const RESET_LATEST_KEY = (userId) => `reset_token_latest:${userId}`;
 
-  return { accessToken, refreshToken };
+const signAccessToken = (userId) =>
+  jwt.sign({ userId }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: ACCESS_TTL });
+
+const signRefreshToken = (userId) =>
+  jwt.sign({ userId }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: REFRESH_TTL });
+
+const cookieBase = {
+  httpOnly: true,
+  secure: true,
+  sameSite: "none",
+  path: "/",
+};
+
+const setAuthCookies = (res, { accessToken, refreshToken }) => {
+  if (accessToken) {
+    res.cookie("accessToken", accessToken, { ...cookieBase, maxAge: 15 * 60 * 1000 });
+  }
+  if (refreshToken) {
+    res.cookie("refreshToken", refreshToken, { ...cookieBase, maxAge: 7 * 24 * 60 * 60 * 1000 });
+  }
+};
+
+const clearAuthCookies = (res) => {
+  res.clearCookie("accessToken", cookieBase);
+  res.clearCookie("refreshToken", cookieBase);
 };
 
 const storeRefreshToken = async (userId, refreshToken) => {
-  await redis.set(`refresh_token:${userId}`, refreshToken, "EX", 7 * 24 * 60 * 60); // 7 days
+  await redis.set(REFRESH_KEY(userId), refreshToken, "EX", 7 * 24 * 60 * 60);
 };
 
-const setCookies = (res, accessToken, refreshToken) => {
-  res.cookie("accessToken", accessToken, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "none",
-    maxAge: 15 * 60 * 1000,
-  });
-  res.cookie("refreshToken", refreshToken, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "none",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-  });
+const issueSession = async (res, userId) => {
+  const accessToken = signAccessToken(userId);
+  const refreshToken = signRefreshToken(userId);
+  await storeRefreshToken(userId, refreshToken);
+  setAuthCookies(res, { accessToken, refreshToken });
+  return { accessToken, refreshToken };
 };
 
-const RESET_TOKEN_TTL_SECONDS = 15 * 60;
+const pickRefreshToken = (req) => {
+  // cookie first, then body
+  return req.cookies?.refreshToken || req.body?.refreshToken || null;
+};
 
 // ✅ SIGNUP
 export const signup = async (req, res) => {
   const { name, email, password } = req.body;
+
   try {
-    const userExists = await User.findOne({ where: { email } });
-    if (userExists) {
-      return res.status(400).json({ message: "User already exists" });
-    }
+    const exists = await User.findOne({ where: { email } });
+    if (exists) return res.status(400).json({ message: "User already exists" });
 
     const user = await User.create({ name, email, password });
+    const { accessToken, refreshToken } = await issueSession(res, user.id);
 
-    const { accessToken, refreshToken } = generateTokens(user.id);
-    await storeRefreshToken(user.id, refreshToken);
-    setCookies(res, accessToken, refreshToken);
-
-    res.status(201).json({
+    // ✅ return tokens for Bearer auth fallback
+    return res.status(201).json({
       id: user.id,
       name: user.name,
       email: user.email,
       role: user.role,
+      accessToken,
+      refreshToken,
     });
-  } catch (error) {
-    console.error("Error in signup controller:", error.message);
-    res.status(500).json({ message: error.message });
+  } catch (e) {
+    console.error("signup error:", e.message);
+    return res.status(500).json({ message: "Server error" });
   }
 };
 
 // ✅ LOGIN
 export const login = async (req, res) => {
   const { email, password } = req.body;
+
   try {
     const user = await User.findOne({ where: { email } });
     if (!user || !(await user.comparePassword(password))) {
       return res.status(400).json({ message: "Invalid email or password" });
     }
 
-    const { accessToken, refreshToken } = generateTokens(user.id);
-    await storeRefreshToken(user.id, refreshToken);
-    setCookies(res, accessToken, refreshToken);
+    const { accessToken, refreshToken } = await issueSession(res, user.id);
 
-    res.json({
+    return res.json({
       id: user.id,
       name: user.name,
       email: user.email,
       role: user.role,
+      accessToken,
+      refreshToken,
     });
-  } catch (error) {
-    console.error("Error in login controller:", error.message);
-    res.status(500).json({ message: error.message });
+  } catch (e) {
+    console.error("login error:", e.message);
+    return res.status(500).json({ message: "Server error" });
   }
 };
 
 // ✅ LOGOUT
 export const logout = async (req, res) => {
   try {
-    const refreshToken = req.cookies.refreshToken;
-    if (refreshToken) {
-      const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
-      await redis.del(`refresh_token:${decoded.userId}`);
+    const token = req.cookies?.refreshToken || null;
+    if (token) {
+      const decoded = jwt.verify(token, process.env.REFRESH_TOKEN_SECRET);
+      await redis.del(REFRESH_KEY(decoded.userId));
     }
-
-    res.clearCookie("accessToken");
-    res.clearCookie("refreshToken");
-    res.json({ message: "Logged out successfully" });
-  } catch (error) {
-    console.error("Error in logout controller:", error.message);
-    res.status(500).json({ message: "Server error" });
+    clearAuthCookies(res);
+    return res.json({ message: "Logged out successfully" });
+  } catch (e) {
+    clearAuthCookies(res);
+    return res.json({ message: "Logged out" });
   }
 };
 
-
-// ✅ REFRESH TOKEN
+// ✅ REFRESH TOKEN (cookie OR body) -> returns { accessToken }
 export const refreshToken = async (req, res) => {
   try {
-    const refreshToken = req.cookies.refreshToken;
-    if (!refreshToken) return res.status(401).json({ message: "No refresh token provided" });
+    const token = pickRefreshToken(req);
+    if (!token) return res.status(401).json({ message: "No refresh token provided" });
 
-    const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
-    const storedToken = await redis.get(`refresh_token:${decoded.userId}`);
+    const decoded = jwt.verify(token, process.env.REFRESH_TOKEN_SECRET);
+    const stored = await redis.get(REFRESH_KEY(decoded.userId));
 
-    if (storedToken !== refreshToken) {
+    if (!stored || stored !== token) {
+      clearAuthCookies(res);
       return res.status(401).json({ message: "Invalid refresh token" });
     }
 
-    const accessToken = jwt.sign({ userId: decoded.userId }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "15m" });
+    const newAccessToken = signAccessToken(decoded.userId);
+    setAuthCookies(res, { accessToken: newAccessToken });
 
-    res.cookie("accessToken", accessToken, {
-      httpOnly: true,
-      secure: false,
-      sameSite: "lax",
-      maxAge: 15 * 60 * 1000,
-    });
-
-    res.json({ message: "Token refreshed successfully" });
-  } catch (error) {
-    console.error("Error in refreshToken controller:", error.message);
-    res.status(500).json({ message: "Server error" });
+    return res.json({ accessToken: newAccessToken });
+  } catch (e) {
+    clearAuthCookies(res);
+    return res.status(401).json({ message: "Refresh failed" });
   }
 };
 
-// ✅ PROFILE
+// ✅ PROFILE (req.user is set by middleware)
 export const getProfile = async (req, res) => {
-  try {
-    // const user = await User.findByPk(req.user.userId, {
-    //   attributes: ["id", "name", "email", "role", "company", "industry", "subscriptionPlan"],
-    // });
-    res.json(req.user);
-  } catch (error) {
-    res.status(500).json({ message: "Server error", error: error.message });
-  }
+  return res.json(req.user);
 };
 
+// ✅ FORGOT PASSWORD
 export const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
-
-    // Always respond the same message to avoid email enumeration
     const genericMsg =
       "If an account exists for that email, you’ll receive a password reset link shortly.";
 
@@ -162,77 +165,53 @@ export const forgotPassword = async (req, res) => {
     const user = await User.findOne({ where: { email } });
     if (!user) return res.status(200).json({ message: genericMsg });
 
-    // Create raw token to email
     const rawToken = crypto.randomBytes(32).toString("hex");
-
-    // Hash token before storing (so if redis leaks, raw token isn't usable)
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
 
-    // Store mapping tokenHash -> userId in redis with expiry
-    await redis.set(`reset_token:${tokenHash}`, String(user.id), "EX", RESET_TOKEN_TTL_SECONDS);
-
-    // Optional: invalidate old reset tokens for this user by tracking latest token
-    // (helps prevent multiple valid tokens)
-    await redis.set(`reset_token_latest:${user.id}`, tokenHash, "EX", RESET_TOKEN_TTL_SECONDS);
+    await redis.set(RESET_KEY(tokenHash), String(user.id), "EX", RESET_TOKEN_TTL_SECONDS);
+    await redis.set(RESET_LATEST_KEY(user.id), tokenHash, "EX", RESET_TOKEN_TTL_SECONDS);
 
     const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${rawToken}`;
-
-    await sendPasswordResetEmail({
-      to: user.email,
-      resetUrl,
-    });
+    await sendPasswordResetEmail({ to: user.email, resetUrl });
 
     return res.status(200).json({ message: genericMsg });
-  } catch (error) {
-    console.error("Error in forgotPassword controller:", error.message);
+  } catch (e) {
+    console.error("forgotPassword error:", e.message);
     return res.status(500).json({ message: "Server error" });
   }
 };
 
-// POST /auth/reset-password
+// ✅ RESET PASSWORD
 export const resetPassword = async (req, res) => {
   try {
     const { token, newPassword } = req.body;
-
     if (!token || !newPassword) {
       return res.status(400).json({ message: "Token and newPassword are required" });
     }
 
-    // Hash incoming token to match stored key
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const userId = await redis.get(RESET_KEY(tokenHash));
+    if (!userId) return res.status(400).json({ message: "Invalid or expired reset token" });
 
-    const userId = await redis.get(`reset_token:${tokenHash}`);
-    if (!userId) {
-      return res.status(400).json({ message: "Invalid or expired reset token" });
-    }
-
-    // Optional check: ensure it's the latest token issued for that user
-    const latestHash = await redis.get(`reset_token_latest:${userId}`);
+    const latestHash = await redis.get(RESET_LATEST_KEY(userId));
     if (latestHash && latestHash !== tokenHash) {
       return res.status(400).json({ message: "Invalid or expired reset token" });
     }
 
     const user = await User.findByPk(userId);
-    if (!user) {
-      return res.status(400).json({ message: "Invalid reset token" });
-    }
+    if (!user) return res.status(400).json({ message: "Invalid reset token" });
 
-    // Update password (assumes your User model hashes on save via hook)
     user.password = newPassword;
     await user.save();
 
-    // Delete reset token(s)
-    await redis.del(`reset_token:${tokenHash}`);
-    await redis.del(`reset_token_latest:${userId}`);
+    await redis.del(RESET_KEY(tokenHash));
+    await redis.del(RESET_LATEST_KEY(userId));
+    await redis.del(REFRESH_KEY(userId));
 
-    // Security: invalidate sessions (force re-login)
-    await redis.del(`refresh_token:${userId}`);
-    res.clearCookie("accessToken");
-    res.clearCookie("refreshToken");
-
+    clearAuthCookies(res);
     return res.json({ message: "Password reset successful. Please log in again." });
-  } catch (error) {
-    console.error("Error in resetPassword controller:", error.message);
+  } catch (e) {
+    console.error("resetPassword error:", e.message);
     return res.status(500).json({ message: "Server error" });
   }
 };
