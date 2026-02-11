@@ -24,20 +24,19 @@ app.use(express.json());
 app.use(cookieParser());
 
 
-
-const allowedOrigins = [
+const allowedOrigins = new Set([
   "http://localhost:5173",
-   process.env.FRONTEND_URL
-];
+  process.env.FRONTEND_URL, // your main Vercel URL (prod/custom domain)
+].filter(Boolean));
+
+const isVercelPreview = (origin) =>
+  /^https:\/\/mtjd-ai-insight-frontend-.*\.vercel\.app$/.test(origin);
 
 app.use(
   cors({
     origin: (origin, cb) => {
-      // allow server-to-server, Postman, Render health checks
       if (!origin) return cb(null, true);
-
-      if (allowedOrigins.includes(origin)) return cb(null, true);
-
+      if (allowedOrigins.has(origin) || isVercelPreview(origin)) return cb(null, true);
       return cb(new Error(`CORS blocked: ${origin}`));
     },
     credentials: true,
