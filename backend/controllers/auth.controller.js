@@ -157,26 +157,29 @@ export const getProfile = async (req, res) => {
 export const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
-    const genericMsg =
-      "If an account exists for that email, you’ll receive a password reset link shortly.";
-
-    if (!email) return res.status(200).json({ message: genericMsg });
+    console.log("[forgot] email:", email);
 
     const user = await User.findOne({ where: { email } });
-    if (!user) return res.status(200).json({ message: genericMsg });
+    console.log("[forgot] user found:", !!user);
+    if (!user) return res.status(200).json({ message: "If an account exists..." });
 
     const rawToken = crypto.randomBytes(32).toString("hex");
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
 
+    console.log("[forgot] writing redis...");
     await redis.set(RESET_KEY(tokenHash), String(user.id), "EX", RESET_TOKEN_TTL_SECONDS);
     await redis.set(RESET_LATEST_KEY(user.id), tokenHash, "EX", RESET_TOKEN_TTL_SECONDS);
+    console.log("[forgot] redis OK");
 
     const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${rawToken}`;
-    await sendPasswordResetEmail({ to: user.email, resetUrl });
+    console.log("[forgot] sending email...", { to: user.email, resetUrl });
 
-    return res.status(200).json({ message: genericMsg });
+    await sendPasswordResetEmail({ to: user.email, resetUrl });
+    console.log("[forgot] email sent OK");
+
+    return res.status(200).json({ message: "If an account exists..." });
   } catch (e) {
-    console.error("forgotPassword error:", e.message);
+    console.error("forgotPassword error:", e);
     return res.status(500).json({ message: "Server error" });
   }
 };

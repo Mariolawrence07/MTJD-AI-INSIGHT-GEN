@@ -1,4 +1,4 @@
-// utils/email.js
+// // utils/email.js
 import nodemailer from "nodemailer";
 
 export const transporter = nodemailer.createTransport({
@@ -26,3 +26,44 @@ export async function sendPasswordResetEmail({ to, resetUrl }) {
     `,
   });
 }
+
+
+
+// import sgMail from "@sendgrid/mail";
+
+// sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
+// export async function sendPasswordResetEmail({ to, resetUrl }) {
+//   const msg = {
+//     to,
+//     from: process.env.EMAIL_FROM, // MUST be verified sender
+//     subject: "Reset your password",
+//     html: `
+//       <div style="font-family: Arial, sans-serif; line-height:1.6">
+//         <h2>Password Reset</h2>
+
+//         <p>You requested a password reset.</p>
+
+//         <p>
+//           <a href="${resetUrl}"
+//              style="
+//                display:inline-block;
+//                padding:12px 20px;
+//                background:#111827;
+//                color:white;
+//                text-decoration:none;
+//                border-radius:6px;
+//                font-weight:bold;">
+//              Reset Password
+//           </a>
+//         </p>
+
+//         <p>This link expires in <b>15 minutes</b>.</p>
+
+//         <p>If you didn't request this, you can safely ignore this email.</p>
+//       </div>
+//     `,
+//   };
+
+//   await sgMail.send(msg);
+// }
